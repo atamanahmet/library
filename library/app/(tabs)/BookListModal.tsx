@@ -1,5 +1,6 @@
-// BookListModal.tsx
 import {
+  Alert,
+  Image,
   Modal,
   ScrollView,
   StyleSheet,
@@ -9,16 +10,18 @@ import {
 } from "react-native";
 
 export type Book = {
-  author_key: string[];
-  author_name: string[];
-  ebook_access: string;
-  edition_count: number;
-  first_publish_year: number;
-  has_fulltext: boolean;
+  author_key?: string[];
+  author_name?: string[];
+  ebook_access?: string;
+  edition_count?: number;
+  first_publish_year?: number;
+  has_fulltext?: boolean;
   key: string;
-  language: string[];
-  public_scan_b: boolean;
+  language?: string[];
+  public_scan_b?: boolean;
   title: string;
+  cover_i?: number;
+  id?: number;
 };
 
 type Props = {
@@ -27,23 +30,60 @@ type Props = {
   books: Book[];
 };
 
+const missingImage = require("../../assets/images/missing.png");
+
 export default function BookListModal({ visible, onClose, books }: Props) {
+  const handleSelect = async (book: Book) => {
+    try {
+      const res = await fetch("http://192.168.1.86:8080/selectedData", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(book),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text);
+      }
+
+      Alert.alert("Book sent", `${book.title} sent to backend`);
+    } catch (err: any) {
+      console.error("Failed to send book:", err.message);
+      Alert.alert("Error", "Failed to send book to backend.");
+    }
+  };
+
+  const getCoverUrl = (cover_i?: number) =>
+    cover_i ? `https://covers.openlibrary.org/b/id/${cover_i}-M.jpg` : null;
+
   return (
     <Modal transparent visible={visible} animationType="slide">
       <View style={styles.overlay}>
         <View style={styles.modal}>
           <Text style={styles.header}>Books Found</Text>
-          <ScrollView style={styles.bookList}>
+          <ScrollView contentContainerStyle={styles.bookGrid}>
             {books.map((book, index) => (
-              <View key={index} style={styles.bookItem}>
+              <TouchableOpacity
+                key={index}
+                style={styles.card}
+                onPress={() => handleSelect(book)}
+              >
+                <Image
+                  source={
+                    book.cover_i
+                      ? { uri: getCoverUrl(book.cover_i) }
+                      : missingImage
+                  }
+                  style={styles.cover}
+                />
+
                 <Text style={styles.title}>{book.title}</Text>
                 <Text style={styles.author}>
-                  {book.author_name?.join(", ") || "Unknown Author"}
+                  {book.author_name?.join(", ") || "Unknown"}
                 </Text>
-                <Text style={styles.meta}>
-                  {book.first_publish_year} • {book.language?.join(", ")}
-                </Text>
-              </View>
+              </TouchableOpacity>
             ))}
           </ScrollView>
           <TouchableOpacity onPress={onClose} style={styles.closeButton}>
@@ -63,8 +103,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   modal: {
-    width: "90%",
-    maxHeight: "80%",
+    width: "95%",
+    maxHeight: "85%",
     backgroundColor: "#fff",
     borderRadius: 10,
     padding: 16,
@@ -73,32 +113,40 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: "bold",
     marginBottom: 12,
+    textAlign: "center",
   },
-  bookList: {
-    marginBottom: 12,
+  bookGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-around",
   },
-  bookItem: {
-    marginBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: "#ddd",
-    paddingBottom: 6,
+  card: {
+    width: 100,
+    marginBottom: 16,
+    alignItems: "center",
+  },
+  cover: {
+    width: 100,
+    height: 150,
+    borderRadius: 6,
+    backgroundColor: "#eee",
+    marginBottom: 6,
   },
   title: {
-    fontSize: 16,
-    fontWeight: "600",
+    fontSize: 12,
+    fontWeight: "bold",
+    textAlign: "center",
   },
   author: {
-    color: "#444",
-  },
-  meta: {
-    color: "#666",
-    fontSize: 12,
+    fontSize: 10,
+    color: "#555",
+    textAlign: "center",
   },
   closeButton: {
     alignSelf: "center",
-    marginTop: 8,
+    marginTop: 12,
     padding: 10,
-    backgroundColor: "#eee",
+    backgroundColor: "#ddd",
     borderRadius: 6,
   },
   closeText: {

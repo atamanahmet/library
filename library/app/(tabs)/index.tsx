@@ -1,14 +1,9 @@
 import AntDesign from "@expo/vector-icons/AntDesign";
 import Feather from "@expo/vector-icons/Feather";
 import FontAwesome6 from "@expo/vector-icons/FontAwesome6";
-import {
-  CameraMode,
-  CameraType,
-  CameraView,
-  useCameraPermissions,
-} from "expo-camera";
+import { Camera, CameraView } from "expo-camera";
 import { Image } from "expo-image";
-import { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Button,
@@ -19,15 +14,23 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { Book } from "./BookListModal"; // adjust path if needed
+import BookListModal, { Book } from "./BookListModal"; // Adjust path if needed
 
 export default function App() {
-  const [permission, requestPermission] = useCameraPermissions();
-  const ref = useRef<CameraView>(null);
+  const [hasPermission, setHasPermission] = useState<boolean | null>(null);
+  const [barcodePermission, setBarcodePermission] = useState<boolean | null>(
+    null
+  );
+
+  // Fixed camera ref type
+  const cameraRef = useRef<CameraView | null>(null);
+
   const [uri, setUri] = useState<string | null>(null);
-  const [mode, setMode] = useState<CameraMode>("picture");
-  const [facing, setFacing] = useState<CameraType>("back");
-  const [textBlocks, setTextBlocks] = useState<string[]>([]);
+  const [mode, setMode] = useState<"picture" | "video">("picture");
+
+  // Updated to use string literals for camera facing
+  const [facing, setFacing] = useState<"front" | "back">("back");
+
   const [editableText, setEditableText] = useState("");
   const [searchText, setSearchText] = useState("");
   const [ocrLoading, setOcrLoading] = useState(false);
@@ -35,38 +38,48 @@ export default function App() {
   const [books, setBooks] = useState<Book[]>([]);
   const [modalVisible, setModalVisible] = useState(false);
 
-  if (!permission) return null;
-  if (!permission.granted) {
-    return (
-      <View style={styles.permissionContainer}>
-        <Text style={styles.permissionText}>
-          We need your permission to use the camera
-        </Text>
-        <Button onPress={requestPermission} title="Grant permission" />
-      </View>
-    );
-  }
+  const [searchMode, setSearchMode] = useState<"isbn" | "title" | null>(null);
+  const [isbnScanned, setIsbnScanned] = useState(false);
+
+  // Request permissions once
+  useEffect(() => {
+    (async () => {
+      const { status } = await Camera.requestCameraPermissionsAsync();
+      setHasPermission(status === "granted");
+      setBarcodePermission(status === "granted");
+    })();
+  }, []);
+
+  // Reset scan flag when modal closes so you can scan again
+  const onCloseModal = () => {
+    setModalVisible(false);
+    setIsbnScanned(false);
+  };
 
   const takePicture = async () => {
-    setTextBlocks([]);
     setEditableText("");
     setSearchText("");
     setError(null);
 
-    try {
-      const photo = await ref.current?.takePictureAsync({
-        base64: false, // full res, no base64
-        quality: 0.7,
-        skipProcessing: true,
-      });
+    if (!cameraRef.current) {
+      setError("Camera not ready");
+      return;
+    }
 
-      if (!photo?.uri) {
+    try {
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.7,
+      });
+      if (!photo.uri) {
         setError("Failed to capture photo");
         return;
       }
-
       setUri(photo.uri);
-      await uploadPhoto(photo.uri);
+
+      // Only call OCR API if we're in title search mode
+      if (searchMode === "title") {
+        await uploadPhoto(photo.uri);
+      }
     } catch (e: any) {
       setError("Error capturing or processing photo: " + e.message);
       console.error(e);
@@ -75,10 +88,9 @@ export default function App() {
 
   const uploadPhoto = async (uri: string) => {
     setOcrLoading(true);
-    setTextBlocks([]);
-    setError(null);
     setEditableText("");
     setSearchText("");
+    setError(null);
 
     try {
       const formData = new FormData();
@@ -102,16 +114,30 @@ export default function App() {
       }
 
       const text = await response.text();
-
-      // Set editable text for editing/search
       setEditableText(text);
-
-      const lines = text.split("\n").filter((line) => line.trim());
-      setTextBlocks(lines);
     } catch (e: any) {
       setError("Upload failed: " + e.message);
     } finally {
       setOcrLoading(false);
+    }
+  };
+
+  // Properly typed barcode scan handler
+  const handleISBNScanned = async ({ data }: { data: string }) => {
+    if (isbnScanned) return;
+    setIsbnScanned(true);
+    setError(null);
+
+    try {
+      const response = await fetch(`http://192.168.1.86:8080/isbn/${data}`);
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const json = await response.json();
+      setBooks(json);
+      setModalVisible(true);
+    } catch (err: any) {
+      setError("ISBN fetch failed: " + err.message);
     }
   };
 
@@ -123,25 +149,94 @@ export default function App() {
     setFacing((prev) => (prev === "back" ? "front" : "back"));
   };
 
-  const sendEditedText = async (text: string) => {
-    try {
-      const encodedText = encodeURIComponent(text);
-      const response = await fetch(
-        `http://192.168.1.86:8080/edited/${encodedText}`
-      );
+  const renderCamera = () => (
+    <View style={{ flex: 1, width: "100%" }}>
+      {/* Mode select buttons */}
+      <View style={styles.searchModeContainer}>
+        <Pressable
+          onPress={() => {
+            setSearchMode("isbn");
+            setUri(null);
+            setEditableText("");
+            setSearchText("");
+            setError(null);
+            setIsbnScanned(false);
+          }}
+          style={[
+            styles.searchModeBtn,
+            searchMode === "isbn" && styles.searchModeSelected,
+          ]}
+        >
+          <Text style={styles.searchModeText}>ISBN</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => {
+            setSearchMode("title");
+            setUri(null);
+            setEditableText("");
+            setSearchText("");
+            setError(null);
+            setIsbnScanned(false);
+          }}
+          style={[
+            styles.searchModeBtn,
+            searchMode === "title" && styles.searchModeSelected,
+          ]}
+        >
+          <Text style={styles.searchModeText}>Title</Text>
+        </Pressable>
+      </View>
 
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(errText);
-      }
+      {/* ISBN live barcode scanner */}
+      {searchMode === "isbn" && barcodePermission && (
+        <CameraView
+          ref={cameraRef}
+          style={{ flex: 1 }}
+          facing={facing}
+          onBarcodeScanned={handleISBNScanned}
+        />
+      )}
 
-      const json = await response.json();
-      setBooks(json); // assuming backend returns List<Book>
-      setModalVisible(true);
-    } catch (error: any) {
-      console.error("Failed to send edited text:", error.message);
-    }
-  };
+      {/* Title OCR camera (photo capture mode) */}
+      {searchMode === "title" && (
+        <CameraView
+          ref={cameraRef}
+          style={{ flex: 1 }}
+          facing={facing}
+          ratio="16:9"
+        >
+          <View style={styles.shutterContainer}>
+            <Pressable onPress={toggleMode}>
+              {mode === "picture" ? (
+                <AntDesign name="picture" size={32} color="white" />
+              ) : (
+                <Feather name="video" size={32} color="white" />
+              )}
+            </Pressable>
+
+            <Pressable onPress={mode === "picture" ? takePicture : undefined}>
+              {({ pressed }) => (
+                <View
+                  style={[styles.shutterBtn, { opacity: pressed ? 0.5 : 1 }]}
+                >
+                  <View
+                    style={[
+                      styles.shutterBtnInner,
+                      { backgroundColor: mode === "picture" ? "white" : "red" },
+                    ]}
+                  />
+                </View>
+              )}
+            </Pressable>
+
+            <Pressable onPress={toggleFacing}>
+              <FontAwesome6 name="rotate-left" size={32} color="white" />
+            </Pressable>
+          </View>
+        </CameraView>
+      )}
+    </View>
+  );
 
   const renderPicture = () => (
     <View style={styles.pictureContainer}>
@@ -151,7 +246,6 @@ export default function App() {
       <Button
         onPress={() => {
           setUri(null);
-          setTextBlocks([]);
           setEditableText("");
           setSearchText("");
           setError(null);
@@ -166,7 +260,10 @@ export default function App() {
       return <Text style={styles.detectedTextLine}>{editableText}</Text>;
     }
 
-    const regex = new RegExp(`(${searchText})`, "gi");
+    const regex = new RegExp(
+      `(${searchText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`,
+      "gi"
+    );
     const parts = editableText.split(regex);
 
     return (
@@ -184,60 +281,31 @@ export default function App() {
     );
   };
 
-  const renderCamera = () => (
-    <View style={{ flex: 1, width: "100%" }}>
-      <CameraView
-        style={{ flex: 1, width: "100%" }}
-        ref={ref}
-        mode={mode}
-        facing={facing}
-        mute={false}
-      >
-        <View style={styles.shutterContainer}>
-          <Pressable onPress={toggleMode}>
-            {mode === "picture" ? (
-              <AntDesign name="picture" size={32} color="white" />
-            ) : (
-              <Feather name="video" size={32} color="white" />
-            )}
-          </Pressable>
-          <Pressable onPress={mode === "picture" ? takePicture : undefined}>
-            {({ pressed }) => (
-              <View
-                style={[
-                  styles.shutterBtn,
-                  {
-                    opacity: pressed ? 0.5 : 1,
-                  },
-                ]}
-              >
-                <View
-                  style={[
-                    styles.shutterBtnInner,
-                    { backgroundColor: mode === "picture" ? "white" : "red" },
-                  ]}
-                />
-              </View>
-            )}
-          </Pressable>
-          <Pressable onPress={toggleFacing}>
-            <FontAwesome6 name="rotate-left" size={32} color="white" />
-          </Pressable>
-        </View>
-      </CameraView>
-    </View>
-  );
-
   return (
     <View style={styles.container}>
-      {uri ? renderPicture() : renderCamera()}
+      {!hasPermission && (
+        <View style={styles.permissionContainer}>
+          <Text style={styles.permissionText}>
+            Camera permission is required to use this app.
+          </Text>
+          <Button
+            title="Grant Permission"
+            onPress={async () => {
+              const { status } = await Camera.requestCameraPermissionsAsync();
+              setHasPermission(status === "granted");
+              setBarcodePermission(status === "granted");
+            }}
+          />
+        </View>
+      )}
 
-      {/* OCR Text output */}
+      {hasPermission && (uri ? renderPicture() : renderCamera())}
+
       <View style={styles.textBlocksContainer}>
         {ocrLoading && <ActivityIndicator size="large" color="#0f0" />}
         {!!error && <Text style={{ color: "red" }}>{error}</Text>}
 
-        {editableText.length > 0 && (
+        {searchMode === "title" && editableText.length > 0 && (
           <>
             <Text style={styles.detectedTextTitle}>
               Detected Text (editable):
@@ -271,7 +339,6 @@ export default function App() {
             <Button
               title="Clear Text"
               onPress={() => {
-                setTextBlocks([]);
                 setEditableText("");
                 setSearchText("");
               }}
@@ -279,12 +346,31 @@ export default function App() {
             <View style={{ marginTop: 12 }}>
               <Button
                 title="Send Edited Text to Backend"
-                onPress={() => sendEditedText(editableText)}
+                onPress={async () => {
+                  try {
+                    const encoded = encodeURIComponent(editableText);
+                    const response = await fetch(
+                      `http://192.168.1.86:8080/edited/${encoded}`
+                    );
+                    if (!response.ok) throw new Error(await response.text());
+                    const json = await response.json();
+                    setBooks(json);
+                    setModalVisible(true);
+                  } catch (err: any) {
+                    setError("Send failed: " + err.message);
+                  }
+                }}
               />
             </View>
           </>
         )}
       </View>
+
+      <BookListModal
+        visible={modalVisible}
+        onClose={onCloseModal}
+        books={books}
+      />
     </View>
   );
 }
@@ -330,22 +416,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  shutterBtnInner: {
-    width: 70,
-    height: 70,
-    borderRadius: 50,
-  },
+  shutterBtnInner: { width: 70, height: 70, borderRadius: 50 },
   textBlocksContainer: {
     padding: 8,
     backgroundColor: "#0008",
     width: "90%",
     marginVertical: 12,
   },
-  detectedTextTitle: {
-    color: "white",
-    fontWeight: "bold",
-    marginBottom: 4,
-  },
+  detectedTextTitle: { color: "white", fontWeight: "bold", marginBottom: 4 },
   editableTextInput: {
     color: "white",
     backgroundColor: "#222",
@@ -369,12 +447,23 @@ const styles = StyleSheet.create({
     height: 40,
     marginRight: 8,
   },
-  detectedTextLine: {
-    color: "white",
-    marginBottom: 2,
+  detectedTextLine: { color: "white", marginBottom: 2 },
+  highlightedText: { backgroundColor: "yellow", color: "black" },
+  searchModeContainer: {
+    flexDirection: "row",
+    justifyContent: "center",
+    paddingVertical: 10,
+    backgroundColor: "#111",
   },
-  highlightedText: {
-    backgroundColor: "yellow",
-    color: "black",
+  searchModeBtn: {
+    width: 80,
+    height: 40,
+    marginHorizontal: 10,
+    backgroundColor: "#333",
+    justifyContent: "center",
+    alignItems: "center",
+    borderRadius: 5,
   },
+  searchModeSelected: { backgroundColor: "#00f" },
+  searchModeText: { color: "white", fontWeight: "bold" },
 });
